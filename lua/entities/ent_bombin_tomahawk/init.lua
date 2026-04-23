@@ -74,6 +74,7 @@ function ENT:Initialize()
 	end
 
 	self:SetModel("models/GMissiles/bgm-109_tomahawk.mdl")
+	self:SetModelScale(1.6, 0)
 	self:PhysicsInit(SOLID_VPHYSICS)
 	self:SetMoveType(MOVETYPE_VPHYSICS)
 	self:SetSolid(SOLID_VPHYSICS)
@@ -499,7 +500,6 @@ function ENT:DiveExplode(pos)
 
 	self:Debug("DIVE: exploding at " .. tostring(pos))
 
-	-- 5 stacked effects — biggest blast in the family
 	local ed1 = EffectData()
 	ed1:SetOrigin(pos)
 	ed1:SetScale(8) ed1:SetMagnitude(8) ed1:SetRadius(800)

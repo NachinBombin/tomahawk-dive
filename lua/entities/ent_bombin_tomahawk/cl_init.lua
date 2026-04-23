@@ -40,6 +40,7 @@ local STAB_DRIFT_THRESH  = 30
 local STAB_DRIFT_BOOST   = 0.75
 
 function ENT:Initialize()
+    self:SetModelScale(1.6, 0)
     self.NikitaEmitter = ParticleEmitter(self:GetPos(), false)
     self.StabEmitter   = ParticleEmitter(self:GetPos(), false)
     self.SmokeEmitter  = ParticleEmitter(self:GetPos(), false)
@@ -55,8 +56,8 @@ function ENT:Think()
 
     local now        = CurTime()
     local age        = now - (self._spawnTime or now)
-    local flameOn    = age >= FLAME_DELAY   -- always true (FLAME_DELAY == 0)
-    local smokeOn    = age < (FLAME_DELAY + SMOKE_FADE)  -- always true (SMOKE_FADE == 1e9)
+    local flameOn    = age >= FLAME_DELAY
+    local smokeOn    = age < (FLAME_DELAY + SMOKE_FADE)
 
     local pos        = self:GetPos()
     local fwd        = self:GetForward()
@@ -70,7 +71,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  WHITE SMOKE TRAIL  (persistent for full missile lifetime)
+    --  WHITE SMOKE TRAIL
     -- --------------------------------------------------------
     if smokeOn and IsValid(self.SmokeEmitter) then
         if math.random() < SMOKE_EMIT_CHANCE then
@@ -97,12 +98,10 @@ function ENT:Think()
         end
     end
 
-    -- Everything below only runs after FLAME_DELAY (which is 0 here, so always)
     if not flameOn then return end
 
     -- --------------------------------------------------------
-    --  Dynamic light: orange core, swells during boost
-    --  Bigger than original (Size 280-380, Brightness 4)
+    --  Dynamic light
     -- --------------------------------------------------------
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
@@ -117,7 +116,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Orange flame core  (7 particles vs original 4)
+    --  Orange flame core
     -- --------------------------------------------------------
     for i = 1, 7 do
         local part = self.NikitaEmitter:Add(
@@ -129,7 +128,7 @@ function ENT:Think()
             part:SetDieTime(math.Rand(0.09, 0.22))
             part:SetStartAlpha(230)
             part:SetEndAlpha(0)
-            part:SetStartSize(math.Rand(26, 48))   -- 1.5× original
+            part:SetStartSize(math.Rand(26, 48))
             part:SetEndSize(math.Rand(6, 15))
             part:SetColor(255, math.random(100, 180), 0)
             part:SetRoll(math.Rand(0, 360))
@@ -140,8 +139,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Fuchsia flame layer  (5 particles vs original 3)
-    --  swells +15 at full boost
+    --  Fuchsia flame layer
     -- --------------------------------------------------------
     local fuchsiaMin = Lerp(boost, 52, 67)
     local fuchsiaMax = Lerp(boost, 67, 82)
@@ -167,7 +165,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Sparks  (6 per tick vs original 3, higher velocity)
+    --  Sparks
     -- --------------------------------------------------------
     for i = 1, 6 do
         local part = self.NikitaEmitter:Add(
@@ -189,8 +187,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  Smoke wisps during flame phase (1-in-2 chance per tick)
-    --  Larger accent wisps than original (1-in-3)
+    --  Smoke wisps
     -- --------------------------------------------------------
     if math.random(1, 2) == 1 then
         local part = self.NikitaEmitter:Add(
@@ -213,7 +210,7 @@ function ENT:Think()
     end
 
     -- --------------------------------------------------------
-    --  STABILIZER THRUSTERS  (scaled up)
+    --  STABILIZER THRUSTERS
     -- --------------------------------------------------------
     if not IsValid(self.StabEmitter) then return end
     self.StabEmitter:SetPos(pos)
