@@ -39,12 +39,163 @@ local STAB_FIRE_CHANCE   = 0.40
 local STAB_DRIFT_THRESH  = 30
 local STAB_DRIFT_BOOST   = 0.75
 
+-- ----------------------------------------------------------------
+--  DAMAGE TIER FX TUNING
+--  BGM-109 body: long narrow fuselage, cruciform tail
+--  Scatter along GetForward() (fuselage axis), ±50u on wings
+-- ----------------------------------------------------------------
+game.AddParticles("particles/fire_01.pcf")
+PrecacheParticleSystem("fire_medium_02")
+
+local TIER_OFFSETS = {
+	-- Tier 1: mid-fuselage and port tail fin
+	[1] = {
+		Vector(0,  30, 4),
+		Vector(0, -30, 4),
+	},
+	-- Tier 2: above + forward fuselage + starboard fin
+	[2] = {
+		Vector(0,  30,  4),
+		Vector(0, -30,  4),
+		Vector(0,  55,  6),
+		Vector(0, -55,  6),
+	},
+}
+
+local TIER_BURST_DELAY = { [1] = 5.0, [2] = 2.5, [3] = 0.9 }
+local TIER_BURST_COUNT = { [1] = 1,   [2] = 2,   [3] = 4   }
+
+-- Per-entity state: tier, particles, nextBurst, pendingApply
+local TomahawkStates = {}
+
+local function BurstAt(pos, tier)
+	local ed = EffectData()
+	ed:SetOrigin(pos)
+	ed:SetScale(1)
+	util.Effect("Explosion", ed, true, true)
+	util.Effect("ManhackSparks", ed, true, true)
+	if tier >= 2 then
+		util.Effect("ElectricSpark", ed, true, true)
+	end
+end
+
+local function SpawnBurstFX(ent, tier)
+	local count = TIER_BURST_COUNT[tier] or 1
+	local fwd   = ent:GetForward()
+	for i = 1, count do
+		-- scatter along fuselage axis
+		local offset = fwd * math.Rand(-50, 50)
+		BurstAt(ent:GetPos() + offset, tier)
+	end
+end
+
+local function ApplyFlameParticles(ent, state, tier)
+	-- Stop old particles
+	for _, pname in ipairs(state.particles) do
+		ParticleStopEmission(ent, false, pname)
+	end
+	state.particles = {}
+
+	if tier == 0 or tier == 3 then return end
+
+	local offsets = TIER_OFFSETS[math.min(tier, 2)]
+	if not offsets then return end
+
+	for _, localOfs in ipairs(offsets) do
+		local pname = "fire_medium_02"
+		local attachIdx = #state.particles + 1
+		ParticleEffectAttach(
+			pname,
+			PARTICLE_ATTACH_WORLDSPACE,
+			ent,
+			ent:GetPos() + ent:LocalToWorld(localOfs) - ent:GetPos()
+		)
+		table.insert(state.particles, pname)
+		-- store offset for tracking
+		state.offsets = state.offsets or {}
+		table.insert(state.offsets, localOfs)
+	end
+end
+
+net.Receive("bombin_tomahawk_damage_tier", function()
+	local idx  = net.ReadUInt(16)
+	local tier = net.ReadUInt(2)
+
+	local ent = Entity(idx)
+	if not IsValid(ent) then
+		-- entity not networked yet; defer until Think picks it up
+		TomahawkStates[idx] = TomahawkStates[idx] or { tier = 0, particles = {}, pendingApply = false }
+		TomahawkStates[idx].pendingApply = tier
+		return
+	end
+
+	local state = TomahawkStates[idx]
+	if not state then
+		state = { tier = 0, particles = {}, pendingApply = false }
+		TomahawkStates[idx] = state
+	end
+
+	state.tier       = tier
+	state.nextBurst  = CurTime() + (TIER_BURST_DELAY[tier] or 9999)
+	state.pendingApply = false
+	ApplyFlameParticles(ent, state, tier)
+end)
+
+hook.Add("Think", "bombin_tomahawk_damage_fx", function()
+	local ct = CurTime()
+	for idx, state in pairs(TomahawkStates) do
+		local ent = Entity(idx)
+
+		if not IsValid(ent) then
+			-- clean up detached particle refs
+			for _, pname in ipairs(state.particles) do
+				ParticleStopEmission(ent, false, pname)
+			end
+			TomahawkStates[idx] = nil
+			continue
+		end
+
+		-- resolve pending apply (entity arrived after net msg)
+		if state.pendingApply ~= false then
+			state.tier       = state.pendingApply
+			state.nextBurst  = ct + (TIER_BURST_DELAY[state.pendingApply] or 9999)
+			state.pendingApply = false
+			ApplyFlameParticles(ent, state, state.tier)
+		end
+
+		local tier = state.tier
+		if tier == 0 then continue end
+
+		-- update particle control points to follow the moving missile
+		if state.offsets and tier < 3 then
+			for i, localOfs in ipairs(state.offsets) do
+				local worldPos = ent:GetPos() + ent:LocalToWorldAngles(Angle(0,0,0)):Forward() * localOfs.x
+				               + ent:GetRight() * localOfs.y
+				               + ent:GetUp()    * localOfs.z
+				-- ParticleEffectAttach keeps the emitter attached to the entity
+				-- so no explicit position update needed; this is handled by the
+				-- PARTICLE_ATTACH_WORLDSPACE mode in ApplyFlameParticles.
+			end
+		end
+
+		-- periodic burst sparks
+		if state.nextBurst and ct >= state.nextBurst then
+			SpawnBurstFX(ent, tier)
+			state.nextBurst = ct + (TIER_BURST_DELAY[tier] or 9999)
+		end
+	end
+end)
+
 function ENT:Initialize()
     self:SetModelScale(1.6, 0)
     self.NikitaEmitter = ParticleEmitter(self:GetPos(), false)
     self.StabEmitter   = ParticleEmitter(self:GetPos(), false)
     self.SmokeEmitter  = ParticleEmitter(self:GetPos(), false)
     self._spawnTime    = CurTime()
+
+	-- init damage tier state for this entity
+	local idx = self:EntIndex()
+	TomahawkStates[idx] = { tier = 0, particles = {}, pendingApply = false, offsets = {} }
 end
 
 function ENT:Draw()
@@ -274,4 +425,13 @@ function ENT:OnRemove()
     if IsValid(self.NikitaEmitter) then self.NikitaEmitter:Finish() end
     if IsValid(self.StabEmitter)   then self.StabEmitter:Finish()   end
     if IsValid(self.SmokeEmitter)  then self.SmokeEmitter:Finish()  end
+
+	local idx = self:EntIndex()
+	local state = TomahawkStates[idx]
+	if state then
+		for _, pname in ipairs(state.particles) do
+			ParticleStopEmission(self, false, pname)
+		end
+		TomahawkStates[idx] = nil
+	end
 end
