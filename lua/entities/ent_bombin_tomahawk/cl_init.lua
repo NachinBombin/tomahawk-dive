@@ -3,14 +3,14 @@ include("shared.lua")
 -- ----------------------------------------------------------------
 --  FLAME / SMOKE TUNING  (active from frame 1, for full lifetime)
 -- ----------------------------------------------------------------
-local FLAME_DELAY    = 0       -- no ignition wait; burn from spawn
-local SMOKE_FADE     = 1e9     -- smoke never fades — active whole lifetime
+local FLAME_DELAY    = 0
+local SMOKE_FADE     = 1e9
 
 -- ----------------------------------------------------------------
---  SMOKE TRAIL TUNING  (big persistent missile plume)
+--  SMOKE TRAIL TUNING
 -- ----------------------------------------------------------------
-local SMOKE_EMIT_CHANCE  = 0.85   -- dense emission
-local SMOKE_SIZE_MIN     = 90     -- 1.6× original
+local SMOKE_EMIT_CHANCE  = 0.85
+local SMOKE_SIZE_MIN     = 90
 local SMOKE_SIZE_MAX     = 175
 local SMOKE_END_MIN      = 180
 local SMOKE_END_MAX      = 280
@@ -20,18 +20,18 @@ local SMOKE_SPEED_MIN    = 45
 local SMOKE_SPEED_MAX    = 110
 local SMOKE_DIE_MIN      = 0.65
 local SMOKE_DIE_MAX      = 1.40
-local SMOKE_SPREAD       = 18     -- slightly wider spread
-local SMOKE_BACK_OFFSET  = 65     -- further back for long fuselage
+local SMOKE_SPREAD       = 18
+local SMOKE_BACK_OFFSET  = 65
 
 -- ----------------------------------------------------------------
---  STABILIZER TUNING  (scaled up)
+--  STABILIZER TUNING
 -- ----------------------------------------------------------------
 local STAB_NOZZLE_DIST   = 24
 local STAB_NOZZLE_BACK   = 14
-local STAB_JET_LEN       = 85     -- vs 55 original
+local STAB_JET_LEN       = 85
 local STAB_JET_SPREAD    = 7
-local STAB_SIZE_MIN      = 5.5    -- vs 3.6 original
-local STAB_SIZE_MAX      = 9.5    -- vs 6.4 original
+local STAB_SIZE_MIN      = 5.5
+local STAB_SIZE_MAX      = 9.5
 local STAB_ALPHA         = 230
 local STAB_DIE_MIN       = 0.07
 local STAB_DIE_MAX       = 0.18
@@ -40,20 +40,16 @@ local STAB_DRIFT_THRESH  = 30
 local STAB_DRIFT_BOOST   = 0.75
 
 -- ----------------------------------------------------------------
---  DAMAGE TIER FX TUNING
---  BGM-109 body: long narrow fuselage, cruciform tail
---  Scatter along GetForward() (fuselage axis), ±50u on wings
+--  DAMAGE TIER FX
 -- ----------------------------------------------------------------
 game.AddParticles("particles/fire_01.pcf")
 PrecacheParticleSystem("fire_medium_02")
 
 local TIER_OFFSETS = {
-	-- Tier 1: mid-fuselage and port tail fin
 	[1] = {
 		Vector(0,  30, 4),
 		Vector(0, -30, 4),
 	},
-	-- Tier 2: above + forward fuselage + starboard fin
 	[2] = {
 		Vector(0,  30,  4),
 		Vector(0, -30,  4),
@@ -65,123 +61,126 @@ local TIER_OFFSETS = {
 local TIER_BURST_DELAY = { [1] = 5.0, [2] = 2.5, [3] = 0.9 }
 local TIER_BURST_COUNT = { [1] = 1,   [2] = 2,   [3] = 4   }
 
--- Per-entity state: tier, particles, nextBurst, pendingApply
 local TomahawkStates = {}
 
 local function BurstAt(pos, tier)
 	local ed = EffectData()
 	ed:SetOrigin(pos)
-	ed:SetScale(1)
-	util.Effect("Explosion", ed, true, true)
-	util.Effect("ManhackSparks", ed, true, true)
+	ed:SetScale(tier == 3 and math.Rand(0.6, 1.2) or math.Rand(0.3, 0.7))
+	ed:SetMagnitude(1)
+	ed:SetRadius(tier * 15)
+	util.Effect("Explosion", ed)
+
+	local ed2 = EffectData()
+	ed2:SetOrigin(pos)
+	ed2:SetNormal(Vector(0, 0, 1))
+	ed2:SetScale(tier * 0.25)
+	ed2:SetMagnitude(tier * 0.35)
+	ed2:SetRadius(14)
+	util.Effect("ManhackSparks", ed2)
+
 	if tier >= 2 then
-		util.Effect("ElectricSpark", ed, true, true)
+		local ed3 = EffectData()
+		ed3:SetOrigin(pos)
+		ed3:SetNormal(VectorRand())
+		ed3:SetScale(0.5)
+		util.Effect("ElectricSpark", ed3)
 	end
 end
 
 local function SpawnBurstFX(ent, tier)
 	local count = TIER_BURST_COUNT[tier] or 1
-	local fwd   = ent:GetForward()
-	for i = 1, count do
-		-- scatter along fuselage axis
-		local offset = fwd * math.Rand(-50, 50)
-		BurstAt(ent:GetPos() + offset, tier)
+	local pos   = ent:GetPos()
+	local ang   = ent:GetAngles()
+	for _ = 1, count do
+		local localOff = Vector(
+			math.Rand(-70, 70),
+			math.Rand(-15, 15),
+			math.Rand( -8, 18)
+		)
+		BurstAt(LocalToWorld(localOff, Angle(0,0,0), pos, ang), tier)
 	end
 end
 
-local function ApplyFlameParticles(ent, state, tier)
-	-- Stop old particles
-	for _, pname in ipairs(state.particles) do
-		ParticleStopEmission(ent, false, pname)
+local function StopParticles(state)
+	if not state.particles then return end
+	for _, p in ipairs(state.particles) do
+		if IsValid(p) then p:StopEmission() end
 	end
 	state.particles = {}
+end
 
-	if tier == 0 or tier == 3 then return end
+local function ApplyFlameParticles(ent, state, tier)
+	StopParticles(state)
+	state.tier = tier
+	if not IsValid(ent) or tier == 0 then return end
 
 	local offsets = TIER_OFFSETS[math.min(tier, 2)]
 	if not offsets then return end
 
-	for _, localOfs in ipairs(offsets) do
-		local pname = "fire_medium_02"
-		local attachIdx = #state.particles + 1
-		ParticleEffectAttach(
-			pname,
-			PARTICLE_ATTACH_WORLDSPACE,
-			ent,
-			ent:GetPos() + ent:LocalToWorld(localOfs) - ent:GetPos()
-		)
-		table.insert(state.particles, pname)
-		-- store offset for tracking
-		state.offsets = state.offsets or {}
-		table.insert(state.offsets, localOfs)
+	for _, off in ipairs(offsets) do
+		local p = ent:CreateParticleEffect("fire_medium_02", PATTACH_ABSORIGIN_FOLLOW, 0)
+		if IsValid(p) then
+			p:SetControlPoint(0, ent:LocalToWorld(off))
+			table.insert(state.particles, p)
+		end
 	end
+
+	state.nextBurst = CurTime() + (TIER_BURST_DELAY[tier] or 4)
 end
 
 net.Receive("bombin_tomahawk_damage_tier", function()
 	local idx  = net.ReadUInt(16)
 	local tier = net.ReadUInt(2)
 
-	local ent = Entity(idx)
-	if not IsValid(ent) then
-		-- entity not networked yet; defer until Think picks it up
-		TomahawkStates[idx] = TomahawkStates[idx] or { tier = 0, particles = {}, pendingApply = false }
-		TomahawkStates[idx].pendingApply = tier
-		return
-	end
-
 	local state = TomahawkStates[idx]
 	if not state then
-		state = { tier = 0, particles = {}, pendingApply = false }
+		state = { tier = 0, particles = {}, nextBurst = 0 }
 		TomahawkStates[idx] = state
 	end
 
-	state.tier       = tier
-	state.nextBurst  = CurTime() + (TIER_BURST_DELAY[tier] or 9999)
-	state.pendingApply = false
-	ApplyFlameParticles(ent, state, tier)
+	if state.tier == tier then return end
+
+	local ent = Entity(idx)
+	if IsValid(ent) then
+		ApplyFlameParticles(ent, state, tier)
+		if tier > 0 then SpawnBurstFX(ent, tier) end
+	else
+		state.tier         = tier
+		state.pendingApply = true
+	end
 end)
 
 hook.Add("Think", "bombin_tomahawk_damage_fx", function()
 	local ct = CurTime()
 	for idx, state in pairs(TomahawkStates) do
 		local ent = Entity(idx)
-
 		if not IsValid(ent) then
-			-- clean up detached particle refs
-			for _, pname in ipairs(state.particles) do
-				ParticleStopEmission(ent, false, pname)
-			end
+			StopParticles(state)
 			TomahawkStates[idx] = nil
-			continue
-		end
-
-		-- resolve pending apply (entity arrived after net msg)
-		if state.pendingApply ~= false then
-			state.tier       = state.pendingApply
-			state.nextBurst  = ct + (TIER_BURST_DELAY[state.pendingApply] or 9999)
-			state.pendingApply = false
-			ApplyFlameParticles(ent, state, state.tier)
-		end
-
-		local tier = state.tier
-		if tier == 0 then continue end
-
-		-- update particle control points to follow the moving missile
-		if state.offsets and tier < 3 then
-			for i, localOfs in ipairs(state.offsets) do
-				local worldPos = ent:GetPos() + ent:LocalToWorldAngles(Angle(0,0,0)):Forward() * localOfs.x
-				               + ent:GetRight() * localOfs.y
-				               + ent:GetUp()    * localOfs.z
-				-- ParticleEffectAttach keeps the emitter attached to the entity
-				-- so no explicit position update needed; this is handled by the
-				-- PARTICLE_ATTACH_WORLDSPACE mode in ApplyFlameParticles.
+		else
+			if state.pendingApply then
+				state.pendingApply = false
+				ApplyFlameParticles(ent, state, state.tier)
 			end
-		end
 
-		-- periodic burst sparks
-		if state.nextBurst and ct >= state.nextBurst then
-			SpawnBurstFX(ent, tier)
-			state.nextBurst = ct + (TIER_BURST_DELAY[tier] or 9999)
+			if state.tier > 0 then
+				local pos     = ent:GetPos()
+				local ang     = ent:GetAngles()
+				local offsets = TIER_OFFSETS[math.min(state.tier, 2)]
+				if offsets then
+					for i, p in ipairs(state.particles) do
+						if IsValid(p) and offsets[i] then
+							p:SetControlPoint(0, LocalToWorld(offsets[i], Angle(0,0,0), pos, ang))
+						end
+					end
+				end
+
+				if ct >= state.nextBurst then
+					SpawnBurstFX(ent, state.tier)
+					state.nextBurst = ct + (TIER_BURST_DELAY[state.tier] or 4)
+				end
+			end
 		end
 	end
 end)
@@ -193,9 +192,8 @@ function ENT:Initialize()
     self.SmokeEmitter  = ParticleEmitter(self:GetPos(), false)
     self._spawnTime    = CurTime()
 
-	-- init damage tier state for this entity
 	local idx = self:EntIndex()
-	TomahawkStates[idx] = { tier = 0, particles = {}, pendingApply = false, offsets = {} }
+	TomahawkStates[idx] = { tier = 0, particles = {}, nextBurst = 0 }
 end
 
 function ENT:Draw()
@@ -221,9 +219,6 @@ function ENT:Think()
         self.SmokeEmitter:SetPos(pos)
     end
 
-    -- --------------------------------------------------------
-    --  WHITE SMOKE TRAIL
-    -- --------------------------------------------------------
     if smokeOn and IsValid(self.SmokeEmitter) then
         if math.random() < SMOKE_EMIT_CHANCE then
             local spread = VectorRand() * SMOKE_SPREAD
@@ -251,9 +246,6 @@ function ENT:Think()
 
     if not flameOn then return end
 
-    -- --------------------------------------------------------
-    --  Dynamic light
-    -- --------------------------------------------------------
     local dlight = DynamicLight(self:EntIndex())
     if dlight then
         dlight.pos        = exhaustPos
@@ -266,9 +258,6 @@ function ENT:Think()
         dlight.DieTime    = CurTime() + 0.05
     end
 
-    -- --------------------------------------------------------
-    --  Orange flame core
-    -- --------------------------------------------------------
     for i = 1, 7 do
         local part = self.NikitaEmitter:Add(
             "particles/flamelet" .. math.random(1, 5),
@@ -289,9 +278,6 @@ function ENT:Think()
         end
     end
 
-    -- --------------------------------------------------------
-    --  Fuchsia flame layer
-    -- --------------------------------------------------------
     local fuchsiaMin = Lerp(boost, 52, 67)
     local fuchsiaMax = Lerp(boost, 67, 82)
 
@@ -315,9 +301,6 @@ function ENT:Think()
         end
     end
 
-    -- --------------------------------------------------------
-    --  Sparks
-    -- --------------------------------------------------------
     for i = 1, 6 do
         local part = self.NikitaEmitter:Add(
             "effects/spark",
@@ -337,9 +320,6 @@ function ENT:Think()
         end
     end
 
-    -- --------------------------------------------------------
-    --  Smoke wisps
-    -- --------------------------------------------------------
     if math.random(1, 2) == 1 then
         local part = self.NikitaEmitter:Add(
             "particle/particle_smokegrenade",
@@ -360,9 +340,6 @@ function ENT:Think()
         end
     end
 
-    -- --------------------------------------------------------
-    --  STABILIZER THRUSTERS
-    -- --------------------------------------------------------
     if not IsValid(self.StabEmitter) then return end
     self.StabEmitter:SetPos(pos)
 
@@ -386,7 +363,7 @@ function ENT:Think()
         driftVec = Vector(driftX / driftLen, driftY / driftLen, 0)
     end
 
-    for idx, nozzle in ipairs(nozzles) do
+    for _, nozzle in ipairs(nozzles) do
         local outDir  = nozzle[1]
         local nozzPos = nozzle[2]
         local drift2D = Vector(outDir.x, outDir.y, 0)
@@ -426,12 +403,10 @@ function ENT:OnRemove()
     if IsValid(self.StabEmitter)   then self.StabEmitter:Finish()   end
     if IsValid(self.SmokeEmitter)  then self.SmokeEmitter:Finish()  end
 
-	local idx = self:EntIndex()
+	local idx   = self:EntIndex()
 	local state = TomahawkStates[idx]
 	if state then
-		for _, pname in ipairs(state.particles) do
-			ParticleStopEmission(self, false, pname)
-		end
+		StopParticles(state)
 		TomahawkStates[idx] = nil
 	end
 end
