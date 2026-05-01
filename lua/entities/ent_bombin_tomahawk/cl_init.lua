@@ -1,4 +1,5 @@
 include("shared.lua")
+include("cl_trailsystem.lua")
 
 -- ----------------------------------------------------------------
 --  FLAME / SMOKE TUNING  (active from frame 1, for full lifetime)
@@ -38,6 +39,26 @@ local STAB_DIE_MAX       = 0.18
 local STAB_FIRE_CHANCE   = 0.40
 local STAB_DRIFT_THRESH  = 30
 local STAB_DRIFT_BOOST   = 0.75
+
+-- ----------------------------------------------------------------
+--  NOSECONE SHOCK CONE TUNING
+--  Sporadic Prandtl-Glauert condensation ring at the missile tip.
+--  NOSE_FWD: units forward from entity center to nose tip (local X).
+--  SHOCK_INTERVAL_MIN/MAX: seconds between shock events.
+--  SHOCK_RING_PARTS: particles per ring burst.
+-- ----------------------------------------------------------------
+local NOSE_FWD           = 58
+local SHOCK_INTERVAL_MIN = 0.35
+local SHOCK_INTERVAL_MAX = 1.80
+local SHOCK_RING_PARTS   = 10
+local SHOCK_VEL_MIN      = 90
+local SHOCK_VEL_MAX      = 200
+local SHOCK_DIE_MIN      = 0.055
+local SHOCK_DIE_MAX      = 0.13
+local SHOCK_SIZE_START   = 3
+local SHOCK_SIZE_END_MIN = 22
+local SHOCK_SIZE_END_MAX = 40
+local SHOCK_ALPHA        = 210
 
 -- ----------------------------------------------------------------
 --  DAMAGE TIER FX
@@ -190,7 +211,9 @@ function ENT:Initialize()
     self.NikitaEmitter = ParticleEmitter(self:GetPos(), false)
     self.StabEmitter   = ParticleEmitter(self:GetPos(), false)
     self.SmokeEmitter  = ParticleEmitter(self:GetPos(), false)
+    self.ShockEmitter  = ParticleEmitter(self:GetPos(), false)
     self._spawnTime    = CurTime()
+    self._nextShock    = CurTime() + math.Rand(SHOCK_INTERVAL_MIN, SHOCK_INTERVAL_MAX)
 
 	local idx = self:EntIndex()
 	TomahawkStates[idx] = { tier = 0, particles = {}, nextBurst = 0 }
@@ -210,6 +233,8 @@ function ENT:Think()
 
     local pos        = self:GetPos()
     local fwd        = self:GetForward()
+    local right      = self:GetRight()
+    local up         = self:GetUp()
     local backDir    = -fwd
     local exhaustPos = pos + backDir * SMOKE_BACK_OFFSET
     local boost      = self:GetNWFloat("TomahawkBoost", 0)
@@ -217,6 +242,37 @@ function ENT:Think()
     self.NikitaEmitter:SetPos(pos)
     if IsValid(self.SmokeEmitter) then
         self.SmokeEmitter:SetPos(pos)
+    end
+
+    -- ----------------------------------------------------------------
+    --  NOSECONE SHOCK CONE  (sporadic Prandtl-Glauert ring)
+    -- ----------------------------------------------------------------
+    if IsValid(self.ShockEmitter) and now >= self._nextShock then
+        self._nextShock = now + math.Rand(SHOCK_INTERVAL_MIN, SHOCK_INTERVAL_MAX)
+        local nosePos = pos + fwd * NOSE_FWD
+        self.ShockEmitter:SetPos(nosePos)
+        for i = 1, SHOCK_RING_PARTS do
+            local angle  = (i / SHOCK_RING_PARTS) * math.pi * 2
+            local radDir = right * math.cos(angle) + up * math.sin(angle)
+            local part   = self.ShockEmitter:Add(
+                "particle/particle_smokegrenade",
+                nosePos + radDir * math.Rand(2, 6)
+            )
+            if part then
+                part:SetVelocity( radDir * math.Rand(SHOCK_VEL_MIN, SHOCK_VEL_MAX)
+                                + fwd * math.Rand(-20, 8) )
+                part:SetDieTime( math.Rand(SHOCK_DIE_MIN, SHOCK_DIE_MAX) )
+                part:SetStartAlpha( SHOCK_ALPHA )
+                part:SetEndAlpha( 0 )
+                part:SetStartSize( SHOCK_SIZE_START )
+                part:SetEndSize( math.Rand(SHOCK_SIZE_END_MIN, SHOCK_SIZE_END_MAX) )
+                part:SetColor( 210, 230, 255 )
+                part:SetRoll( math.Rand(0, 360) )
+                part:SetRollDelta( 0 )
+                part:SetGravity( Vector(0, 0, 0) )
+                part:SetCollide( false )
+            end
+        end
     end
 
     if smokeOn and IsValid(self.SmokeEmitter) then
@@ -343,8 +399,6 @@ function ENT:Think()
     if not IsValid(self.StabEmitter) then return end
     self.StabEmitter:SetPos(pos)
 
-    local right = self:GetRight()
-    local up    = self:GetUp()
     local nozzleBase = pos + backDir * STAB_NOZZLE_BACK
 
     local nozzles = {
@@ -402,6 +456,7 @@ function ENT:OnRemove()
     if IsValid(self.NikitaEmitter) then self.NikitaEmitter:Finish() end
     if IsValid(self.StabEmitter)   then self.StabEmitter:Finish()   end
     if IsValid(self.SmokeEmitter)  then self.SmokeEmitter:Finish()  end
+    if IsValid(self.ShockEmitter)  then self.ShockEmitter:Finish()  end
 
 	local idx   = self:EntIndex()
 	local state = TomahawkStates[idx]
